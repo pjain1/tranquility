@@ -16,6 +16,7 @@
  */
 package com.metamx.tranquility.beam
 
+import com.metamx.common.Granularity
 import com.metamx.common.scala.untyped._
 import org.scala_tools.time.Imports._
 
@@ -27,9 +28,9 @@ import org.scala_tools.time.Imports._
  */
 trait BeamMaker[A, BeamType <: Beam[A]]
 {
-  def newBeam(interval: Interval, partition: Int): BeamType
+  def newBeam(interval: Interval, partition: Int, granularity: Granularity, allowGranularityChange :Boolean): BeamType
 
   def toDict(beam: BeamType): Dict
 
-  def fromDict(d: Dict): BeamType
+  def fromDict(d: Dict, allowGranularityChanged :Boolean): BeamType
 }
