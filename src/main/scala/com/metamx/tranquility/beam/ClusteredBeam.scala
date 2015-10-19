@@ -218,9 +218,10 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
     val futureBeamOption = beams.get(timestamp.millis) match {
       case _ if !open => Future.value(None)
       // If the granularity has changed since tranquility restart and we found some beam that can handle this event return that beam
-      // In some scenarios the events may be dropped either by the client after some retry if the task corresponding to beam is already finished
-      // or by Druid if the event is outside the window period
-      // This case be further optimized to considering the actual granularity of the beam instead of tuning.segmentBucket to find out windowInterval
+      // In some scenarios the events may be dropped either by the client after retry (http timeout) if the task corresponding to beam is already finished
+      // or by Druid if the event is outside the window period (as this checks are performed in the next case - see below)
+      // This case be further optimized by considering the actual granularity of the beam instead of tuning.segmentBucket to find out windowInterval
+      // but more testing will be required and also we will need to store window period (and warming period) as well in ZK metadata to be accurate about when to drop events here
       case Some(x) if allowGranularityChange => {
         log.warn("Mismatch in segment granularities detected between the current segment granularity and the segment granularity of beam to which these events belong, operating in safe mode - will not warm up beams and perform strict checking of intervals for beams until unless all the previous beams and/or current partial beams are closed")
         Future.value(Some(x))
