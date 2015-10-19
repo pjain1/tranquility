@@ -400,7 +400,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
           // It can be because of two reasons -
           //  1. Granularity has been decreased or
           //  2. The event belongs to a past interval which covers partial segment interval because the segment granularity was increased in middle of that new segment bucket
-          //     Basically it is a late event and can be dropped depending on the window period.
+          //     Basically it is a late event and might be dropped depending on the window period.
 
           allowGranularityChange = true
 
