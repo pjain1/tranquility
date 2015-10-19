@@ -127,6 +127,27 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
   // that we thought were closed.
   @volatile private[this] var localLatestCloseTime = new DateTime(0)
 
+  @volatile private[this] var zkMetadataCache: ClusteredBeamMeta =  {
+    try {
+      val dataPath = zpathWithDefault("data", ClusteredBeamMeta.empty.toBytes(objectMapper))
+      curator.sync().forPath(dataPath)
+      val prevMeta = ClusteredBeamMeta.fromBytes(objectMapper, curator.getData.forPath(dataPath)).fold(
+        e => {
+          emitAlert(e, log, emitter, WARN, "Failed to read beam data from cache: %s" format identifier, alertMap)
+          throw e
+        },
+        meta => meta
+      )
+      prevMeta
+    }
+    catch {
+      case e: Throwable =>
+        // Log Throwables to avoid invisible errors caused by https://github.com/twitter/util/issues/100.
+        log.error(e, "Failed to sync with zookeeper: %s", identifier)
+        throw e
+    }
+  }
+
   private[this] val rand = new Random
 
   // Merged beams we are currently aware of, interval start millis -> merged beam.
@@ -159,6 +180,14 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
           log.info("Writing new beam data to[%s]: %s", dataPath, new String(newMetaBytes))
           curator.setData().forPath(dataPath, newMetaBytes)
         }
+        zkMetadataCache = newMeta
+
+        log.debug(zkMetadataCache.latestCloseTime.toString)
+        zkMetadataCache.beamDictss foreach {
+          beamDict =>
+            log.debug(beamDict._2.toString())
+        }
+
         newMeta
       }
       catch {
@@ -169,26 +198,6 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
       }
       finally {
         mutex.release()
-      }
-    }
-
-    def syncWithZK(): Future[ClusteredBeamMeta] = zkFuturePool {
-      try {
-        curator.sync().forPath(dataPath)
-        val prevMeta = ClusteredBeamMeta.fromBytes(objectMapper, curator.getData.forPath(dataPath)).fold(
-          e => {
-            emitAlert(e, log, emitter, WARN, "Failed to read beam data from cache: %s" format identifier, alertMap)
-            throw e
-          },
-          meta => meta
-        )
-        prevMeta
-      }
-      catch {
-        case e: Throwable =>
-          // Log Throwables to avoid invisible errors caused by https://github.com/twitter/util/issues/100.
-          log.error(e, "Failed to sync with zookeeper: %s", identifier)
-          throw e
       }
     }
   }
@@ -205,10 +214,13 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
       tuning.segmentBucket(now - tuning.windowPeriod).start,
       tuning.segmentBucket(now + tuning.windowPeriod).end
     )
+    log.debug("Looking for beam having start time [%s]", timestamp)
     val futureBeamOption = beams.get(timestamp.millis) match {
       case _ if !open => Future.value(None)
       // If the granularity has changed since tranquility restart and we found some beam that can handle this event return that beam
-      // In worst case scenario the event will be dropped if the task is already done or the event is outside the window period
+      // In some scenarios the events may be dropped either by the client after some retry if the task corresponding to beam is already finished
+      // or by Druid if the event is outside the window period
+      // This case be further optimized to considering the actual granularity of the beam instead of tuning.segmentBucket to find out windowInterval
       case Some(x) if allowGranularityChange => {
         log.warn("Mismatch in segment granularities detected between the current segment granularity and the segment granularity of beam to which these events belong, operating in safe mode - will not warm up beams and perform strict checking of intervals for beams until unless all the previous beams and/or current partial beams are closed")
         Future.value(Some(x))
@@ -272,7 +284,12 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
               val newBeamDictss: Map[Long, Seq[Dict]] = (prev.beamDictss filterNot {
                 case (millis, beam) =>
                   // Expire old beamDicts
-                  tuning.segmentGranularity.increment(new DateTime(millis)) + tuning.windowPeriod < now
+                  // We would like to use the segment granularity of beam to check whether we can expire it or not
+                  // If not present then use the current tuning segment granularity
+                  DruidBeamMaker.getSegmentGranularity(beam.head.getOrElse("granularityId", "NONE").toString) match {
+                    case Some(granularity) => granularity.increment(new DateTime(millis)) + tuning.windowPeriod < now
+                    case None => tuning.segmentGranularity.increment(new DateTime(millis)) + tuning.windowPeriod < now
+                  }
               }) ++ (for (ts <- timestampsToCover) yield {
                 val tsPrevDicts = prev.beamDictss.getOrElse(ts.millis, Nil)
                 log.info(
@@ -410,7 +427,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
               x._2.zipWithIndex map {
                 case (beamDict, partitionNum) =>
                   // Note - Using segment granularity of existing beam not the one set in Beam Tuning as they might differ
-                  // Although it might not matter as of now as the decorate function is an identity function
+                  // Although it might not matter as of now as the default decorate function is an identity function
                   val decorate = beamDecorateFn(DruidBeamMaker.getSegmentGranularity(x._2.head("granularityId").toString).get.bucket(eventTimestamp), partitionNum)
                   decorate(beamMaker.fromDict(beamDict, allowGranularityChange))
               }
@@ -441,8 +458,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
 
   def propagate(events: Seq[EventType]) = {
 
-    val clusteredBeamMeta = Await result(data.syncWithZK())
-    val grouped = events.groupBy(groupEvents(_, clusteredBeamMeta)).toSeq.sortBy(_._1.millis)
+    val grouped = events.groupBy(groupEvents(_, zkMetadataCache)).toSeq.sortBy(_._1.millis)
     // Possibly warm up future beams
     def toBeWarmed(dt: DateTime, end: DateTime): List[DateTime] = {
       if (dt <= end) {
