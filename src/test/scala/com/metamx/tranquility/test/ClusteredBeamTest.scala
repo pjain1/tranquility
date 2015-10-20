@@ -134,7 +134,7 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
 
   class TestingBeamMaker extends BeamMaker[SimpleEvent, TestingBeam]
   {
-    def newBeam(interval: Interval, partition: Int) = new TestingBeam(interval.start, partition)
+    def newBeam(interval: Interval, partition: Int, granularity: Granularity, allowGranularityChange :Boolean) = new TestingBeam(interval.start, partition)
 
     def toDict(beam: TestingBeam) = {
       Dict(
@@ -144,7 +144,7 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
       )
     }
 
-    def fromDict(d: Dict) = {
+    def fromDict(d: Dict, allowGranularityChange: Boolean) = {
       val timestamp = new DateTime(d("timestamp"))
       val partition = int(d("partition"))
       val uuid = str(d("uuid"))

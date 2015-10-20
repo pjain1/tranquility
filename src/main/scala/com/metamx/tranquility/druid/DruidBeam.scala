@@ -17,7 +17,7 @@
 package com.metamx.tranquility.druid
 
 import com.google.common.base.Charsets
-import com.metamx.common.Backoff
+import com.metamx.common.{Granularity, Backoff}
 import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Predef._
 import com.metamx.common.scala.event.WARN
@@ -46,6 +46,7 @@ class DruidBeam[A : Timestamper](
   private[druid] val interval: Interval,
   private[druid] val partition: Int,
   private[druid] val tasks: Seq[DruidTaskPointer],
+  private[druid] val granularity: Option[Granularity], // It is an option as it may not be present for old ZK beam entries
   location: DruidLocation,
   config: DruidBeamConfig,
   finagleRegistry: FinagleRegistry,

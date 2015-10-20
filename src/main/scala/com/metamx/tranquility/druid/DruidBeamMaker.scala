@@ -124,11 +124,13 @@ class DruidBeamMaker[A: Timestamper](
     )
   }
 
-  override def newBeam(interval: Interval, partition: Int) = {
-    require(
-      beamTuning.segmentGranularity.widen(interval) == interval,
-      "Interval does not match segmentGranularity[%s]: %s" format(beamTuning.segmentGranularity, interval)
-    )
+  override def newBeam(interval: Interval, partition: Int, granularity: Granularity, allowGranularityChange :Boolean) = {
+    if(!allowGranularityChange) {
+      require(
+        beamTuning.segmentGranularity.widen(interval) == interval,
+        "Interval does not match segmentGranularity[%s]: %s" format(beamTuning.segmentGranularity, interval)
+      )
+    }
     val availabilityGroup = DruidBeamMaker.generateBaseFirehoseId(
       location.dataSource,
       beamTuning.segmentGranularity,
@@ -147,6 +149,7 @@ class DruidBeamMaker[A: Timestamper](
       interval,
       partition,
       tasks,
+      Some(granularity),
       location,
       config,
       finagleRegistry,
@@ -167,31 +170,38 @@ class DruidBeamMaker[A: Timestamper](
       "tasks" -> (beam.tasks map {
         task =>
           Dict("id" -> task.id, "firehoseId" -> task.firehoseId)
-      })
+      }),
+      "granularityId"  -> beam.granularity.getOrElse("NONE").toString
     ) ++ (if (canBeBackwardsCompatible) Dict("timestamp" -> beam.interval.start.toString()) else Map.empty)
   }
 
-  override def fromDict(d: Dict) = {
+  override def fromDict(d: Dict, allowGranularityChange: Boolean) = {
     val interval = if (d contains "interval") {
       new Interval(d("interval"))
     } else {
       // Backwards compatibility (see toDict).
       beamTuning.segmentBucket(new DateTime(d("timestamp")))
     }
-    require(
-      beamTuning.segmentGranularity.widen(interval) == interval,
-      "Interval does not match segmentGranularity[%s]: %s" format(beamTuning.segmentGranularity, interval)
-    )
+    if(!allowGranularityChange) {
+      require(
+        beamTuning.segmentGranularity.widen(interval) == interval,
+        "Interval does not match segmentGranularity[%s]: %s" format(beamTuning.segmentGranularity, interval)
+      )
+    }
     val partition = int(d("partition"))
     val tasks = if (d contains "tasks") {
       list(d("tasks")).map(dict(_)).map(d => DruidTaskPointer(str(d("id")), str(d("firehoseId"))))
     } else {
       Seq(DruidTaskPointer(str(d("taskId")), str(d("firehoseId"))))
     }
+
+    val granularity: Option[Granularity] = DruidBeamMaker.getSegmentGranularity(d.getOrElse("granularityId", "NONE").toString)
+
     new DruidBeam(
       interval,
       partition,
       tasks,
+      granularity,
       location,
       config,
       finagleRegistry,
@@ -226,5 +236,12 @@ object DruidBeamMaker
     }
 
     "%s-%02d-%04d".format(dataSource, cycleBucket, partition)
+  }
+
+  def getSegmentGranularity(granularityId: String): Option[Granularity] = {
+    granularityId match {
+      case "NONE" => None // To be backwards compatible when we were not writing the segment gran in ZK
+      case x => Some(Granularity.valueOf(x))
+    }
   }
 }
