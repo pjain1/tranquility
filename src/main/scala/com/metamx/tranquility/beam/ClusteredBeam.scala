@@ -217,13 +217,18 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
     log.debug("Looking for beam having start time [%s]", timestamp)
     val futureBeamOption = beams.get(timestamp.millis) match {
       case _ if !open => Future.value(None)
-      // If the granularity has changed since tranquility restart and we found some beam that can handle this event return that beam
-      // In this scenario late event check (see next case) is not performed, thus the late events will be dropped either by the client after httpclient timeout if the task corresponding to beam is already finished
-      // or by Druid if the event is outside the window period (as this checks are performed in the next case - see below) and the task is still running
-      // This case be further optimized by considering the actual granularity of the beam instead of tuning.segmentBucket to find out windowInterval
-      // but more testing will be required and also we will need to store window period (and warming period) as well in ZK metadata to be accurate about when to drop events here
+      // If the granularity has changed since tranquility restart and we found some beam that can handle this event
+      // return that beam. In this scenario late event check is not performed, thus the late events will be dropped
+      // either by the client after httpclient timeout if the task corresponding to beam is already finished or by Druid
+      // if the event is outside the window period (as this checks are performed in the next case - see below)
+      // and the task is still running.
+      // This case be further optimized by considering the actual granularity of the beam instead of tuning.segmentBucket
+      // to find out windowInterval but more testing will be required and also we will need to store
+      // window period (and warming period) as well in ZK metadata to be accurate about when to drop events here.
       case Some(x) if allowGranularityChange => {
-        log.warn("Mismatch in segment granularities detected between the current segment granularity and the segment granularity of beam to which these events belong, operating in safe mode - will not warm up beams and perform strict checking of intervals for beams until unless all the previous beams and/or current partial beams are closed")
+        log.warn("Mismatch in segment granularities detected between the current segment granularity and the segment granularity " +
+          "of beam to which these events belong, operating in safe mode - will not warm up beams and perform strict checking of intervals " +
+          "for beams until unless all the previous beams and/or current partial beams are closed")
         Future.value(Some(x))
       }
       case Some(x) if windowInterval.overlaps(bucket) => Future.value(Some(x))
