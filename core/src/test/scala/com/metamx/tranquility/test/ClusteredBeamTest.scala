@@ -109,6 +109,8 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
     def close() = {
       beam.close()
     }
+
+    def getInterval() = None
   }
 
   class TestingBeam(val timestamp: DateTime, val partition: Int, val uuid: String = UUID.randomUUID().toString)
@@ -117,6 +119,8 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
     _lock.synchronized {
       _beams += this
     }
+
+    def getInterval() = None
 
     def propagate(_events: Seq[SimpleEvent]) = _lock.synchronized {
       if (_events.contains(events("defunct"))) {

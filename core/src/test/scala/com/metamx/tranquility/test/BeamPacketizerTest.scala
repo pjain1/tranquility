@@ -56,6 +56,8 @@ class BeamPacketizerTest extends FunSuite with Logging
       }
 
       override def close() = memoryBeam.close()
+
+      def getInterval() = None
     }
 
     val acked = new AtomicLong()
