@@ -426,8 +426,8 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
       beam((tuning.segmentBucket(tbwTimestamp), None), now)
     })
     // Propagate data
-    val countFutures = for ((beamToUse, eventGroup) <- grouped) yield {
-      beam(beamToUse, now) onFailure {
+    val countFutures = for ((beamIntervalPair, eventGroup) <- grouped) yield {
+      beam(beamIntervalPair, now) onFailure {
         e =>
           emitAlert(e, log, emitter, WARN, "Failed to create merged beam: %s" format identifier, alertMap)
       } flatMap {
