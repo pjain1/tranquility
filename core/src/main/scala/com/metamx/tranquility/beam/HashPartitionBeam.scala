@@ -41,4 +41,12 @@ class HashPartitionBeam[A](
   }
 
   override def toString = "HashPartitionBeam(%s)" format delegates.mkString(", ")
+
+  def getInterval() = {
+    val headOptional = delegates.headOption
+    if(headOptional.isEmpty)
+      None
+    else
+      headOptional.get.getInterval()
+  }
 }

@@ -52,6 +52,8 @@ class SimpleBeam extends Beam[SimpleEvent]
   }
 
   def close() = Future.Done
+
+  def getInterval() = None
 }
 
 object SimpleBeam

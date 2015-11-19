@@ -24,8 +24,7 @@ import com.metamx.common.scala.event.WARN
 import com.metamx.common.scala.event.emit.emitAlert
 import com.metamx.common.scala.untyped._
 import com.metamx.emitter.service.ServiceEmitter
-import com.metamx.tranquility.beam.Beam
-import com.metamx.tranquility.beam.DefunctBeamException
+import com.metamx.tranquility.beam.{DiscoverableInterval, Beam, DefunctBeamException}
 import com.metamx.tranquility.finagle._
 import com.metamx.tranquility.typeclass.ObjectWriter
 import com.metamx.tranquility.typeclass.Timestamper
@@ -53,6 +52,8 @@ class DruidBeam[A : Timestamper](
   objectWriter: ObjectWriter[A]
 ) extends Beam[A] with Logging
 {
+  def getInterval() = Some(interval)
+
   private[this] implicit val timer = DefaultTimer.twitter
 
   // Keeps track of each task's client and most recently checked status

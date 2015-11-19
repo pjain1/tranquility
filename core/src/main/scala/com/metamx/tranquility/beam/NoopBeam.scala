@@ -17,6 +17,8 @@
 package com.metamx.tranquility.beam
 
 import com.twitter.util.Future
+import org.joda.time.Interval
+import org.joda.time.chrono.ISOChronology
 
 class NoopBeam[A] extends Beam[A]
 {
@@ -25,4 +27,6 @@ class NoopBeam[A] extends Beam[A]
   def close() = Future.Done
 
   override def toString = "NoopBeam()"
+
+  def getInterval() = Some(new Interval(0, 0, ISOChronology.getInstanceUTC))
 }
