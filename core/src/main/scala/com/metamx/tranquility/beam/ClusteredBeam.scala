@@ -132,7 +132,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
 
   private[this] val rand = new Random
 
-  // Merged beams we are currently aware of, interval start millis -> merged beam.
+  // Reverse sorted list (by interval start time) of Merged beams we are currently aware of
   private[this] var beams: List[Beam[EventType]] =
   {
     try {
@@ -162,8 +162,6 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
     }
     catch {
       case e: Throwable =>
-        // Log Throwables to avoid invisible errors caused by https://github.com/twitter/util/issues/100.
-        log.error(e, "Failed to sync with zookeeper: %s", identifier)
         throw e
     }
   }
@@ -174,7 +172,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
   private[this] lazy val data = new {
     val dataPath = zpathWithDefault("data", ClusteredBeamMeta.empty.toBytes(objectMapper))
 
-    def modify(f: ClusteredBeamMeta => (ClusteredBeamMeta, Interval)): Future[(ClusteredBeamMeta, Interval)] = zkFuturePool {
+    def modify(f: ClusteredBeamMeta => ClusteredBeamMeta): Future[ClusteredBeamMeta] = zkFuturePool {
       mutex.acquire()
       try {
         curator.sync().forPath(dataPath)
@@ -185,14 +183,13 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
           },
           meta => meta
         )
-        val newMetaAndInterval = f(prevMeta)
-        val newMeta = newMetaAndInterval._1
+        val newMeta = f(prevMeta)
         if (newMeta != prevMeta) {
           val newMetaBytes = newMeta.toBytes(objectMapper)
           log.info("Writing new beam data to[%s]: %s", dataPath, new String(newMetaBytes))
           curator.setData().forPath(dataPath, newMetaBytes)
         }
-        newMetaAndInterval
+        newMeta
       }
       catch {
         case e: Throwable =>
@@ -218,46 +215,53 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
       tuning.segmentBucket(now - tuning.windowPeriod).start,
       tuning.segmentBucket(Seq(now + tuning.warmingPeriod, now + tuning.windowPeriod).maxBy(_.millis)).end
     )
-
+    println("beamPair "+beamPair)
     val futureBeamOption = beamPair match {
       case _ if !open => Future.value(None)
       case (interval, Some(foundBeam)) if foundBeam.getInterval().get.end + tuning.windowPeriod <= now => Future.value(None)
       case (interval, Some(foundBeam)) => Future.value(Some(foundBeam))
-      //case (interval, None) if interval.start <= localLatestCloseTime => Future.value(None)
-      case (interval, None) if !creationInterval.overlaps(interval) => Future.value(None)
-      case null => Future.value(None)
+      case (interval, None) if interval.start <= localLatestCloseTime =>
+        println("Not creating beam as interval start time "+interval.start+" <= "+ localLatestCloseTime)
+        Future.value(None)
+      case (interval, None) if !creationInterval.overlaps(interval) =>
+        println("Not creating beam as creation interval "+creationInterval+" !overlap "+ interval)
+        Future.value(None)
       case (interval, None) =>
         data.modify {
           prev =>
             log.info("Trying to create new beam with interval [%s]", interval)
             // We want to create this new beam
-            // But first let us check in ZK if some other tranquility already created the beam for this interval meanwhile
+            // But first let us check in ZK if there is already any beam in ZK covering this interval
 
             val beamDicts: Seq[untyped.Dict] = prev.beamDictss.collectFirst[Seq[untyped.Dict]]({
               case x if new Interval(x._2.head.get("interval").get).overlaps(interval) => x._2
             }) getOrElse Nil
 
-            if (beamDicts.size >= tuning.partitions && new Interval(beamDicts.head.get("interval").get).contains(interval)) {
+            if (beamDicts.size >= tuning.partitions) {
               log.info(
-                "Merged beam already created for identifier[%s] timestamp[%s], with sufficient partitions (target = %d, actual = %d)",
+                "Merged beam already created for identifier[%s] interval[%s], with sufficient partitions (target = %d, actual = %d)",
                 identifier,
-                interval.start,
+                interval,
                 tuning.partitions,
                 beamDicts.size
               )
-              (prev, new Interval(beamDicts.head.get("interval").get))
-            } else if (interval.start <= prev.latestCloseTime && beamDicts.isEmpty) {
+              prev
+            } else if (interval.start <= prev.latestCloseTime) {
               log.info(
                 "Global latestCloseTime[%s] for identifier[%s] has moved past timestamp[%s], not creating merged beam",
                 prev.latestCloseTime,
                 identifier,
                 interval.start
               )
-              (prev, interval)
+              prev
+            } else if (beamDicts.nonEmpty){
+              throw new IllegalStateException(
+                "WTF?? Requested to create a beam for interval [%s] which overlaps with existing beam [%s]" format(interval, beamDicts)
+              )
             } else {
               // Create the new beam
-              //assert(beamDicts.size < tuning.partitions)
-              //assert(interval.start > prev.latestCloseTime)
+              assert(beamDicts.size < tuning.partitions)
+              assert(interval.start > prev.latestCloseTime)
 
               val numSegmentsToCover = tuning.minSegmentsPerBeam +
                 rand.nextInt(tuning.maxSegmentsPerBeam - tuning.minSegmentsPerBeam + 1)
@@ -267,14 +271,11 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
                 ISOChronology.getInstanceUTC
               )
               var timestampsToCover = tuning.segmentGranularity.getIterable(intervalToCover).asScala.map(_.start)
-              // If we are here and beamDicts is not Nil then there is an existing valid overlapping beam in ZK
-              // so truncate the new beam so that it does not overlaps with any existing beam
-              if (beamDicts.nonEmpty) {
-                log.info("Found overlapping beams [%s] with interval [%s]", beamDicts, interval)
-                intervalToCover =  new Interval(beamDicts.head.get("interval").get) match {
-                  case x if interval.end.millis > x.end.millis => new Interval(x.end, interval.end)
-                  case x => new Interval(interval.start, x.start)
-                }
+
+              // Check if we are trying to create a beam not covering an entire segment
+              if (!tuning.segmentGranularity.widen(interval).equals(interval)) {
+                log.warn("Creating partial beam with interval [%s] as beam [%s] already covers some segment portion", beamDicts, interval)
+                intervalToCover =  interval
                 timestampsToCover = Iterable(intervalToCover.start)
               }
 
@@ -283,7 +284,6 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
               val newBeamDictss: Map[Long, Seq[Dict]] = (prev.beamDictss filterNot {
                 case (millis, beam) =>
                   // Expire old beamDicts
-                  // Should use segment gran and window period saved in ZK
                   new Interval(beam.head.get("interval").get).end + tuning.windowPeriod < now
               }) ++ (for (ts <- timestampsToCover) yield {
                 val tsPrevDicts = prev.beamDictss.getOrElse(ts.millis, Nil)
@@ -315,7 +315,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
                 (Seq(prev.latestCloseTime.millis) ++ (prev.beamDictss.keySet -- newBeamDictss.keySet)).max,
                 ISOChronology.getInstanceUTC
               )
-              (ClusteredBeamMeta(newLatestCloseTime, newBeamDictss), intervalToCover)
+              ClusteredBeamMeta(newLatestCloseTime, newBeamDictss)
             }
         } rescue {
           case e: Throwable =>
@@ -325,12 +325,10 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
               )
             )
         } map {
-          metaAndInterval =>
+          meta =>
             // Update local stuff with our goodies from zk.
-            val meta = metaAndInterval._1
-            val interval = metaAndInterval._2
-            localLatestCloseTime = meta.latestCloseTime
             beamWriteMonitor.synchronized {
+              localLatestCloseTime = meta.latestCloseTime
               val timestamp = interval.start
               // Only add the beams we actually wanted at this time. This is because there might be other beams in ZK
               // that we don't want to add just yet, on account of maybe they need their partitions expanded (this only
@@ -359,6 +357,8 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
                 beam.close()
               }
               beams = beams.diff(expiredBeams)
+              // This may not be required as we are never creating beams in past
+              // so in effect the list will always be reverse sorted
               beams = beams.sortBy(-_.getInterval().get.start.millis)
 
               // Return requested beam. It may not have actually been created, so it's an Option.
@@ -388,28 +388,39 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
     }
   }
 
-  def groupEvents(event: EventType): (Interval, Option[Beam[EventType]]) = {
+  def groupEvents(event: EventType, intervalBeamPair: mutable.Map[Interval, Option[Beam[EventType]]]): (Interval, Option[Beam[EventType]]) = {
     val eventTimestamp = timestamper(event)
-    if (beams.headOption.nonEmpty && beams.headOption.get.getInterval().get.contains(eventTimestamp)) {
-      // we except to hit this case majority of times
-      (beams.head.getInterval().get, beams.headOption)
-    } else {
-      // looks in sequential order for the predicate to be true
-      val foundBeam = beams.find(_.getInterval().get.contains(eventTimestamp))
-      if(foundBeam.nonEmpty) {
-        (foundBeam.get.getInterval().get, foundBeam)
-      } else {
-        // We did not find any beam that can handle this event
-        // We may create a new beam if no overlapping beam exists in the ZK, see beam method
+    // looks in sequential order for the predicate to be true
+    // Most of the times head beam can handle the event as the beams is reverse sorted list by start time of interval
+
+    intervalBeamPair.find(_._1.contains(eventTimestamp)) match {
+      case Some(mapEntry) => (mapEntry._1, mapEntry._2)
+      // We did not find any beam that can handle this event
+      // We may create a new beam if no overlapping beam exists in the ZK, see beam method
+      case None =>
         val requiredInterval = tuning.segmentBucket(eventTimestamp)
-        (requiredInterval, None)
-      }
+        // Check to see if it overlaps with any existing beam interval might be because of some segment gran changes
+        val mayBeOverlappingInterval = beams.collectFirst {
+          case x if x.getInterval().get.overlaps(requiredInterval) => x.getInterval().get
+        } getOrElse new Interval(0,0)
+
+        (
+          new Interval(
+            Math.max(mayBeOverlappingInterval.end.millis, requiredInterval.start.millis),
+            Math.max(mayBeOverlappingInterval.end.millis, requiredInterval.end.millis)
+          ),
+          None
+        )
     }
   }
 
   def propagate(events: Seq[EventType]) = {
     val now = timekeeper.now.withZone(DateTimeZone.UTC)
-    val grouped = events.groupBy(groupEvents).toSeq.sortBy(_._1._1.start.millis)
+    val intervalBeamPair = new mutable.HashMap[Interval, Option[Beam[EventType]]]()
+    beams map {
+      beam => intervalBeamPair.+=((beam.getInterval().get, Some(beam)))
+    }
+    val grouped = events.groupBy(groupEvents(_, intervalBeamPair)).toSeq.sortBy(_._1._1.start.millis)
     // Possibly warm up future beams
     def toBeWarmed(dt: DateTime, end: DateTime): List[DateTime] = {
       if (dt <= end) {
@@ -420,7 +431,8 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
     }
     val warmingBeams = Future.collect(for (
       latestEvent <- grouped.lastOption.map(_._2.maxBy(timestamper(_).millis)).map(timestamper).toList;
-      tbwTimestamp <- toBeWarmed(latestEvent, latestEvent + tuning.warmingPeriod) if tbwTimestamp > latestEvent
+      tbwTimestamp <- toBeWarmed(latestEvent, latestEvent + tuning.warmingPeriod) if tbwTimestamp > latestEvent &&
+        !beams.exists(_.getInterval().get.contains(tbwTimestamp))
     ) yield {
       // Create beam asynchronously
       beam((tuning.segmentBucket(tbwTimestamp), None), now)
@@ -449,10 +461,10 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
               )
               data.modify {
                 prev =>
-                  (ClusteredBeamMeta(
+                  ClusteredBeamMeta(
                     Seq(prev.latestCloseTime, timestamp).maxBy(_.millis),
                     prev.beamDictss - timestamp.millis
-                  ), beam.getInterval().get)
+                  )
               } onSuccess {
                 meta =>
                   beamWriteMonitor.synchronized {
