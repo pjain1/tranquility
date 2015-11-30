@@ -221,6 +221,9 @@ object DruidBeams
         def close() = clusteredBeam.close() map (_ => lifecycle.stop())
 
         override def toString = clusteredBeam.toString
+
+        def getInterval() = clusteredBeam.getInterval()
+
       }
     }
 

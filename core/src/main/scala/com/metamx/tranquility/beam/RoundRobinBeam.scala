@@ -38,4 +38,11 @@ class RoundRobinBeam[A](
   }
 
   override def toString = "RoundRobinBeam(%s)" format beams.mkString(", ")
+
+  def getInterval() = {
+    beams.headOption match {
+      case Some(x) => x.getInterval()
+      case None => None
+    }
+  }
 }

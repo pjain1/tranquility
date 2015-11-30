@@ -17,12 +17,13 @@
 package com.metamx.tranquility.beam
 
 import com.twitter.util.Future
+import org.joda.time.Interval
 
 /**
  * Beams can accept events and forward them along. The propagate method may throw a DefunctBeamException, which means
  * the beam should be discarded (after calling close()).
  */
-trait Beam[A]
+trait Beam[A] extends DiscoverableInterval
 {
   /**
    * Request propagation of events. The operation may fail in various ways, which tend to be specific to
@@ -39,4 +40,12 @@ trait Beam[A]
 class DefunctBeamException(s: String, t: Throwable) extends Exception(s, t)
 {
   def this(s: String) = this(s, null)
+}
+
+trait DiscoverableInterval
+{
+  /**
+   * Returns the interval handled by the Beam, can return None if there is no associated interval
+   * */
+  def getInterval(): Option[Interval]
 }

@@ -58,6 +58,9 @@ class HttpBeam[A: Timestamper](
   emitter: ServiceEmitter
 ) extends Beam[A] with Logging
 {
+
+  def getInterval() = None
+
   private[this] implicit val timer: Timer = DefaultTimer.twitter
 
   private[this] val port = if (uri.port > 0) {

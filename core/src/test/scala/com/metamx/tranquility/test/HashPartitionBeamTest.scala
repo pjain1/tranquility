@@ -24,6 +24,7 @@ import com.metamx.tranquility.beam.HashPartitionBeam
 import com.twitter.util.Await
 import com.twitter.util.Future
 import java.util.concurrent.CopyOnWriteArrayList
+import org.joda.time.Interval
 import org.scalatest.FunSuite
 import org.scalatest.Matchers
 import scala.collection.JavaConverters._
@@ -42,6 +43,10 @@ class HashPartitionBeamTest extends FunSuite with Matchers
     override def propagate(events: Seq[TestObject]): Future[Int] = {
       events foreach callback
       Future(events.size)
+    }
+
+    override def getInterval() = {
+      None
     }
 
     override def close() = Future.Done

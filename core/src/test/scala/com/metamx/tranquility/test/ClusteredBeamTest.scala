@@ -44,6 +44,7 @@ import org.apache.curator.framework.CuratorFramework
 import org.joda.time.DateTimeZone
 import org.joda.time.DateTime
 import org.joda.time.Interval
+import org.joda.time.chrono.ISOChronology
 import org.scala_tools.time.Implicits._
 import org.scalatest.BeforeAndAfter
 import org.scalatest.FunSuite
@@ -68,7 +69,14 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
     SimpleEvent(new DateTime("2012-01-01T01:10Z"), Map("foo" -> "e")),
     SimpleEvent(new DateTime("2012-01-01T01:20Z"), Map("foo" -> "f")),
     SimpleEvent(new DateTime("2012-01-01T03:05Z"), Map("foo" -> "g")),
-    SimpleEvent(new DateTime("2012-01-01T03:20Z"), Map("foo" -> "h"))
+    SimpleEvent(new DateTime("2012-01-01T03:20Z"), Map("foo" -> "h")),
+    SimpleEvent(new DateTime("2012-01-01T01:05Z"), Map("foo" -> "i")),
+    SimpleEvent(new DateTime("2012-01-01T01:06Z"), Map("foo" -> "j")),
+    SimpleEvent(new DateTime("2012-01-01T01:07Z"), Map("foo" -> "k")),
+    SimpleEvent(new DateTime("2012-01-01T01:06Z"), Map("foo" -> "l")),
+    SimpleEvent(new DateTime("2012-01-01T01:05Z"), Map("foo" -> "m")),
+    SimpleEvent(new DateTime("2012-01-01T01:09Z"), Map("foo" -> "n")),
+    SimpleEvent(new DateTime("2012-01-01T01:10Z"), Map("foo" -> "o"))
   ) map {
     x => x.fields("foo") -> x
   }).toMap
@@ -79,14 +87,18 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
   val localZone = new DateTime().getZone
 
   def buffers = _lock.synchronized {
-    _buffers.values.map(x => (x.timestamp.withZone(localZone), x.partition, x.open, x.buffer.toSeq)).toSet
+    _buffers.values.map(x => (x.interval.start.withZone(localZone), x.partition, x.open, x.buffer.toSeq)).toSet
+  }
+
+  def buffersWithInterval = _lock.synchronized {
+    _buffers.values.map(x => (x.interval, x.partition, x.open, x.buffer.toSeq)).toSet
   }
 
   def beamsList = _lock.synchronized {
     _beams.toList
   }
 
-  class EventBuffer(val timestamp: DateTime, val partition: Int)
+  class EventBuffer(val interval: Interval, val partition: Int)
   {
     val buffer: mutable.Buffer[SimpleEvent] = mutable.ListBuffer()
     @volatile var open: Boolean = true
@@ -109,20 +121,24 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
     def close() = {
       beam.close()
     }
+
+    def getInterval() = None
   }
 
-  class TestingBeam(val timestamp: DateTime, val partition: Int, val uuid: String = UUID.randomUUID().toString)
+  class TestingBeam(val interval: Interval, val partition: Int, val uuid: String = UUID.randomUUID().toString)
     extends Beam[SimpleEvent]
   {
     _lock.synchronized {
       _beams += this
     }
 
+    def getInterval() = Some(interval)
+
     def propagate(_events: Seq[SimpleEvent]) = _lock.synchronized {
       if (_events.contains(events("defunct"))) {
         Future.exception(new DefunctBeamException("Defunct"))
       } else {
-        val buffer = _buffers.getOrElseUpdate(uuid, new EventBuffer(timestamp, partition))
+        val buffer = _buffers.getOrElseUpdate(uuid, new EventBuffer(interval, partition))
         buffer.open = true
         buffer.buffer ++= _events
         Future.value(_events.size)
@@ -131,13 +147,13 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
 
     def close() = _lock.synchronized {
       _beams -= this
-      val buffer = _buffers.getOrElseUpdate(uuid, new EventBuffer(timestamp, partition))
+      val buffer = _buffers.getOrElseUpdate(uuid, new EventBuffer(interval, partition))
       buffer.open = false
       Future.Done
     }
 
     def toDict = Dict(
-      "timestamp" -> timestamp.toString(),
+      "interval" -> interval.toString,
       "partition" -> partition,
       "uuid" -> uuid
     )
@@ -145,21 +161,21 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
 
   class TestingBeamMaker extends BeamMaker[SimpleEvent, TestingBeam]
   {
-    def newBeam(interval: Interval, partition: Int) = new TestingBeam(interval.start, partition)
+    def newBeam(interval: Interval, partition: Int) = new TestingBeam(interval, partition)
 
     def toDict(beam: TestingBeam) = {
       Dict(
-        "timestamp" -> beam.timestamp.toString(),
+        "interval" -> beam.interval.toString,
         "partition" -> beam.partition,
         "uuid" -> beam.uuid
       )
     }
 
     def fromDict(d: Dict) = {
-      val timestamp = new DateTime(d("timestamp"))
+      val interval= new Interval(d("interval"))
       val partition = int(d("partition"))
       val uuid = str(d("uuid"))
-      new TestingBeam(timestamp, partition, uuid)
+      new TestingBeam(interval, partition, uuid)
     }
   }
 
@@ -353,6 +369,72 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
     }
   }
 
+  test("IncreaseGranularity") {
+    withLocalCurator {
+      curator =>
+        val oldTuning = defaultTuning.copy(segmentGranularity = Granularity.MINUTE, windowPeriod = 1.minute)
+        val newTuning = oldTuning.copy(segmentGranularity = Granularity.FIVE_MINUTE)
+
+        val beamsA = newBeams(curator, oldTuning)
+        beamsA.timekeeper.now = start
+        beamsA.blockagate(Seq("i") map events)
+        beamsA.blockagate(Seq("i") map events)
+        beamsA.timekeeper.now = start + 1.minute
+        beamsA.blockagate(Seq("j") map events)
+        beamsA.blockagate(Seq("j") map events)
+
+        val beamsB = newBeams(curator, newTuning)
+        beamsB.timekeeper.now = start + 2.minute
+        beamsB.blockagate(Seq("k") map events)
+        beamsB.blockagate(Seq("k") map events)
+        beamsB.blockagate(Seq("l") map events)
+        beamsB.blockagate(Seq("l") map events)
+        beamsB.blockagate(Seq("m") map events)
+        beamsB.blockagate(Seq("m") map events)
+        beamsB.blockagate(Seq("n") map events)
+        beamsB.blockagate(Seq("n") map events)
+
+        Await.result(beamsA.close())
+
+        assert(buffersWithInterval === Set(
+          (new Interval("2012-01-01T01:05Z/2012-01-01T01:06Z", ISOChronology.getInstanceUTC), 0, false, Seq("i") map events),
+          (new Interval("2012-01-01T01:05Z/2012-01-01T01:06Z", ISOChronology.getInstanceUTC), 1, false, Seq("i") map events),
+          // "j" and "l" are in same partition as diff beams were used to propagate them
+          (new Interval("2012-01-01T01:06Z/2012-01-01T01:07Z", ISOChronology.getInstanceUTC), 0, false, Seq("j", "l") map events),
+          (new Interval("2012-01-01T01:06Z/2012-01-01T01:07Z", ISOChronology.getInstanceUTC), 1, false, Seq("j", "l") map events),
+          (new Interval("2012-01-01T01:07Z/2012-01-01T01:10Z", ISOChronology.getInstanceUTC), 0, true, Seq("k", "n") map events),
+          (new Interval("2012-01-01T01:07Z/2012-01-01T01:10Z", ISOChronology.getInstanceUTC), 1, true, Seq("k", "n") map events)
+        ))
+    }
+  }
+
+  test("DecreaseGranularity") {
+    withLocalCurator {
+      curator =>
+        val oldTuning = defaultTuning.copy(segmentGranularity = Granularity.FIVE_MINUTE)
+        val newTuning = oldTuning.copy(segmentGranularity = Granularity.MINUTE)
+
+        val beamsA = newBeams(curator, oldTuning)
+        beamsA.timekeeper.now = start
+        beamsA.blockagate(Seq("i") map events)
+
+        val beamsB = newBeams(curator, newTuning)
+        beamsB.timekeeper.now = start + 4.minute
+        beamsB.blockagate(Seq("j") map events)
+        beamsB.blockagate(Seq("n") map events)
+        beamsB.blockagate(Seq("o") map events)
+        beamsB.blockagate(Seq("o") map events)
+        Await.result(beamsB.close())
+
+        assert(buffersWithInterval === Set(
+          (new Interval("2012-01-01T01:05Z/2012-01-01T01:10Z", ISOChronology.getInstanceUTC), 0, false, Seq("i", "j") map events),
+          (new Interval("2012-01-01T01:05Z/2012-01-01T01:10Z", ISOChronology.getInstanceUTC), 1, false, Seq("n") map events),
+          (new Interval("2012-01-01T01:10Z/2012-01-01T01:11Z", ISOChronology.getInstanceUTC), 0, false, Seq("o") map events),
+          (new Interval("2012-01-01T01:10Z/2012-01-01T01:11Z", ISOChronology.getInstanceUTC), 1, false, Seq("o") map events)
+        ))
+    }
+  }
+
   test("DefunctBeam") {
     withLocalCurator {
       curator =>
@@ -385,10 +467,10 @@ class ClusteredBeamTest extends FunSuite with CuratorRequiringSuite with BeforeA
         ))
         val desired = List("2012-01-01T00Z", "2012-01-01T00Z", "2012-01-01T01Z", "2012-01-01T01Z").map(new DateTime(_))
         val startTime = System.currentTimeMillis()
-        while (System.currentTimeMillis() < startTime + 2000 && beamsList.map(_.timestamp).sortBy(_.millis) != desired) {
+        while (System.currentTimeMillis() < startTime + 2000 && beamsList.map(_.interval.start).sortBy(_.millis) != desired) {
           Thread.sleep(100)
         }
-        assert(beamsList.map(_.timestamp).sortBy(_.millis) === desired)
+        assert(beamsList.map(_.interval.start).sortBy(_.millis) === desired)
     }
   }
 

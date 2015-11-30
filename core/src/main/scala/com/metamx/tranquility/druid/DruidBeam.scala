@@ -19,8 +19,7 @@ package com.metamx.tranquility.druid
 import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Predef._
 import com.metamx.emitter.service.ServiceEmitter
-import com.metamx.tranquility.beam.Beam
-import com.metamx.tranquility.beam.DefunctBeamException
+import com.metamx.tranquility.beam.{Beam, DefunctBeamException}
 import com.metamx.tranquility.finagle._
 import com.metamx.tranquility.typeclass.ObjectWriter
 import com.twitter.util.Closable
@@ -44,6 +43,9 @@ class DruidBeam[A](
   objectWriter: ObjectWriter[A]
 ) extends Beam[A] with Logging with Closable
 {
+
+  def getInterval() = Some(interval)
+
   private[this] val clients = Map(
     tasks map {
       task =>

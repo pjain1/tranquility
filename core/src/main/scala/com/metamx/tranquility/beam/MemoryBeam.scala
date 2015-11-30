@@ -28,6 +28,8 @@ class MemoryBeam[A](
   jsonWriter: JsonWriter[A]
 ) extends Beam[A]
 {
+  def getInterval() = None
+
   def propagate(events: Seq[A]) = {
     events.map(event => Jackson.parse[Dict](jsonWriter.asBytes(event))) foreach {
       d =>

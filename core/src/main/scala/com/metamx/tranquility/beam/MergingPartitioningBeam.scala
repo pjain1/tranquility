@@ -44,5 +44,12 @@ class MergingPartitioningBeam[A](
     Future.collect(beams map (_.close())) map (_ => ())
   }
 
+  def getInterval() = {
+    beams.headOption match {
+      case Some(x) => x.getInterval()
+      case None => None
+    }
+  }
+
   override def toString = s"MergingPartitioningBeam(${beams.mkString(", ")})"
 }
