@@ -19,11 +19,13 @@
 package com.metamx.tranquility.finagle
 
 import com.github.nscala_time.time.Imports._
+import javax.net.ssl.SSLContext
 
 case class FinagleRegistryConfig(
   finagleHttpTimeout: Period = 90.seconds,
   finagleHttpConnectionsPerHost: Int = 2,
-  finagleEnableFailFast: Boolean = false
+  finagleEnableFailFast: Boolean = false,
+  sslContext: SSLContext = null
 )
 
 object FinagleRegistryConfig
@@ -49,6 +51,11 @@ object FinagleRegistryConfig
      * Whether Finagle's fail-fast behavior should be enabled.
      */
     def finagleEnableFailFast(x: Boolean) = new Builder(config.copy(finagleEnableFailFast = x))
+
+    /**
+      * SSLContext for TLS support
+      */
+    def sslContext(x: SSLContext) = new Builder(config.copy(sslContext = x))
 
     def build(): FinagleRegistryConfig = config
   }
