@@ -217,6 +217,7 @@ object IndexService
 
         (hostOption, portOption, tlsPortOption) match {
           case (Some(host), Some(_), Some(tlsPort)) if host.nonEmpty && tlsPort > 0 => TaskHostPort(host, tlsPort)
+          case (Some(host), Some(port), None) if host.nonEmpty && port > 0 => TaskHostPort(host, port)
           case (Some(host), Some(port), Some(_)) if host.nonEmpty && port > 0 => TaskHostPort(host, port)
           case _ => unknown
         }

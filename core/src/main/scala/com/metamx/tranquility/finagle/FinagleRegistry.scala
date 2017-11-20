@@ -87,7 +87,11 @@ class FinagleRegistry(
       .logger(FinagleLogger)
       .daemon(true)
       .failFast(config.finagleEnableFailFast)
-    val client = if(config.sslContextOption.isDefined) clientBuilder.tls(config.sslContextOption.get).build() else clientBuilder.build()
+
+    val client = config.sslContextOption match {
+      case Some(sslContext) => clientBuilder.tls(sslContext).build()
+      case None => clientBuilder.build()
+    }
 
     new SharedService(
       new ServiceProxy(client)
