@@ -25,7 +25,7 @@ case class FinagleRegistryConfig(
   finagleHttpTimeout: Period = 90.seconds,
   finagleHttpConnectionsPerHost: Int = 2,
   finagleEnableFailFast: Boolean = false,
-  sslContext: SSLContext = null
+  sslContextOption: Option[SSLContext] = None
 )
 
 object FinagleRegistryConfig
@@ -55,7 +55,7 @@ object FinagleRegistryConfig
     /**
       * SSLContext for TLS support
       */
-    def sslContext(x: SSLContext) = new Builder(config.copy(sslContext = x))
+    def sslContextOption(x: Option[SSLContext]) = new Builder(config.copy(sslContextOption = x))
 
     def build(): FinagleRegistryConfig = config
   }
